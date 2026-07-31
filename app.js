@@ -186,12 +186,17 @@ async function loadKey(key, fallback){
       if(doc.exists) return doc.data().value;
     }catch(e){ console.warn(`Gagal ambil "${key}" dari Firestore, pakai data lokal:`, e.message); }
   }
-  try{ const res = await window.storage.get(key, true); return res ? JSON.parse(res.value) : fallback; }
-  catch(e){ return fallback; }
+  if(window.storage){
+    try{ const res = await window.storage.get(key, true); return res ? JSON.parse(res.value) : fallback; }
+    catch(e){ return fallback; }
+  }
+  return fallback;
 }
 async function persist(key, arrName, data){
   state[arrName] = data;
-  try{ await window.storage.set(key, JSON.stringify(data), true); }catch(e){ console.error('Gagal menyimpan data', e); }
+  if(window.storage){
+    try{ await window.storage.set(key, JSON.stringify(data), true); }catch(e){ console.warn('window.storage tidak tersedia di lingkungan ini (normal untuk situs yang di-hosting sendiri).'); }
+  }
   if(fbReady()){
     try{ await window.fb.db.collection('app-data').doc(key).set({ value:data, updatedAt:new Date().toISOString() }); }
     catch(e){ console.warn(`Gagal sinkron "${key}" ke Firestore:`, e.message); }
@@ -226,6 +231,32 @@ async function fbSignUp(email, password){
     return { ok:true, user: cred.user };
   }catch(e){ return { ok:false, reason: e.code || e.message }; }
 }
+// Membuat akun Firebase Auth untuk KARYAWAN LAIN (dipanggil HRD dari panel HRD).
+// createUserWithEmailAndPassword pada instance auth utama otomatis SIGN-IN sebagai
+// akun baru itu — kalau dipakai langsung, HRD yang sedang login akan ke-gantikan
+// sesinya oleh karyawan baru itu. Makanya di sini dipakai instance Firebase App
+// KEDUA yang terpisah, khusus untuk membuat akun, supaya sesi HRD tidak terganggu.
+let fbSecondaryAuth = null;
+function getFbSecondaryAuth(){
+  if(!fbReady()) return null;
+  if(!fbSecondaryAuth){
+    let secApp;
+    try{ secApp = firebase.app('Secondary'); }
+    catch(e){ secApp = firebase.initializeApp(window.fb.app.options, 'Secondary'); }
+    fbSecondaryAuth = secApp.auth();
+  }
+  return fbSecondaryAuth;
+}
+async function fbSignUpAsAdmin(email, password){
+  const auth2 = getFbSecondaryAuth();
+  if(!auth2) return { ok:false, reason:'not-configured' };
+  try{
+    const cred = await auth2.createUserWithEmailAndPassword(email, password);
+    const uid = cred.user.uid;
+    await auth2.signOut(); // sesi kedua ini cuma dipakai sesaat, tidak memengaruhi sesi HRD di auth utama
+    return { ok:true, uid };
+  }catch(e){ return { ok:false, reason: e.code || e.message }; }
+}
 async function fbSignIn(email, password){
   if(!fbReady()) return { ok:false, reason:'not-configured' };
   try{
@@ -258,7 +289,7 @@ async function fbLoadCollection(collection){
   }catch(e){ console.warn(`fbLoadCollection(${collection}) gagal:`, e.message); return []; }
 }
 
-async function init(){
+async function loadAllData(){
   let emp = await loadKey(K.employees, null);
   if(!emp){
     emp = SEED_EMPLOYEES;
@@ -280,6 +311,10 @@ async function init(){
   state.employees = emp; state.attendance = att; state.leaveRequests = lr; state.payslips = ps;
   state.shiftRequests = sr; state.announcements = an;
   state.overtimeRequests = ot; state.attendanceRequests = ar; state.files = fl; state.shiftSchedule = sc;
+}
+
+async function init(){
+  await loadAllData();
 
   // hrdAuth hanya relevan untuk mode tanpa Firebase (fallback lokal).
   // Kalau Firebase sudah aktif, login HRD sepenuhnya lewat Firebase Auth + custom claim,
@@ -299,6 +334,16 @@ async function init(){
 
   state.loading = false;
   render();
+
+  // Firestore Rules mengharuskan login dulu sebelum bisa membaca data — jadi begitu
+  // status login Firebase berubah (baik sesi lama otomatis pulih saat refresh, maupun
+  // login/registrasi baru selama sesi ini berjalan), muat ulang datanya supaya tidak
+  // nyangkut kosong gara-gara sempat gagal baca saat belum login.
+  if(fbReady()){
+    window.fb.auth.onAuthStateChanged(async (user) => {
+      if(user){ await loadAllData(); render(); }
+    });
+  }
 }
 
 /* ---------------------------------------------------------------- */
@@ -524,7 +569,7 @@ async function actionAddEmployee(){
   if(taken){ if(errEl) errEl.textContent = 'Username sudah digunakan, pilih username lain.'; return; }
   const base = {id:uid('E'), name, position, dept, joinDate, username};
   if(fbReady()){
-    const fbRes = await fbSignUp(fbEmailFor(username), password);
+    const fbRes = await fbSignUpAsAdmin(fbEmailFor(username), password);
     if(!fbRes.ok){ if(errEl) errEl.textContent = fbErrorMsg(fbRes.reason); return; }
     await persist(K.employees, 'employees', [...state.employees, base]);
   } else {

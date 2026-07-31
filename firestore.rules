@@ -6,7 +6,6 @@ service cloud.firestore {
     match /app-data/{docId} {
 
       allow write: if docId in [
-                        'app-employees',
                         'app-payslips',
                         'app-announcements',
                         'app-shift-schedule'
@@ -15,7 +14,6 @@ service cloud.firestore {
                       && request.auth.token.role == 'hrd';
 
       allow write: if !(docId in [
-                        'app-employees',
                         'app-payslips',
                         'app-announcements',
                         'app-shift-schedule'
