@@ -1,0 +1,12 @@
+serviceAccountKey.json
+hrd-setup/
+set-hrd-claim.js
+
+node_modules/
+package-lock.json
+package.json
+
+.DS_Store
+Thumbs.db
+*.log
+.vscode/
