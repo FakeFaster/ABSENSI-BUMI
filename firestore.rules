@@ -5,10 +5,6 @@ service cloud.firestore {
 
     match /app-data/{docId} {
 
-      // Dokumen yang HANYA boleh ditulis oleh akun HRD (custom claim role == 'hrd').
-      // Ini termasuk data karyawan (nama, username, dll — TIDAK ada password, karena
-      // password sekarang murni ditangani Firebase Authentication), slip gaji,
-      // pengumuman, dan jadwal shift bulanan.
       allow write: if docId in [
                         'app-employees',
                         'app-payslips',
@@ -18,11 +14,6 @@ service cloud.firestore {
                       && request.auth != null
                       && request.auth.token.role == 'hrd';
 
-      // Dokumen operasional sehari-hari (absensi, pengajuan izin/lembur/tukar-shift,
-      // file lampiran) boleh ditulis oleh siapa saja yang SUDAH LOGIN.
-      // Catatan: karena satu dokumen menampung array data SEMUA karyawan, rule ini
-      // tidak bisa membatasi "karyawan cuma boleh ubah datanya sendiri" secara ketat.
-      // Untuk itu perlu restrukturisasi data (satu dokumen per record) + Cloud Functions.
       allow write: if !(docId in [
                         'app-employees',
                         'app-payslips',
@@ -31,12 +22,9 @@ service cloud.firestore {
                       ])
                       && request.auth != null;
 
-      // Semua data boleh DIBACA oleh siapa pun yang sudah login (dipakai untuk
-      // menampilkan dashboard, riwayat, dsb).
       allow read: if request.auth != null;
     }
 
-    // Default: tolak semua akses ke collection lain yang tidak didefinisikan di atas.
     match /{document=**} {
       allow read, write: if false;
     }
