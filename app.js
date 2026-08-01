@@ -130,9 +130,20 @@ function mapCard(loc, label){
 
 const SEED_EMPLOYEES = [];
 const HRD_USERNAME = "hrd";
-const SHIFT_OPTIONS = ["Pagi","Siang","Malam"];
-const SCHEDULE_SHIFT_OPTIONS = ["Pagi","Siang","Malam","Libur"];
-const SHIFT_COLOR = { Pagi:'#3C6E96', Siang:'#C98A2C', Malam:'#132720', Libur:'#8B93A7' };
+// Senin–Sabtu: 3 shift (Pagi/Middle/Siang). Minggu: cuma 1 shift jam 13:00.
+const SHIFT_TIMES = { Pagi:'07:00', Middle:'08:00', Siang:'14:00', Minggu:'13:00' };
+const WEEKDAY_SHIFT_NAMES = ["Pagi","Middle","Siang"]; // Senin s/d Sabtu
+const SUNDAY_SHIFT_NAMES = ["Minggu"]; // Khusus Minggu
+const ALL_SHIFT_NAMES = ["Pagi","Middle","Siang","Minggu"];
+const SHIFT_OPTIONS = ALL_SHIFT_NAMES; // dipakai di form "Ganti/Tukar Shift"
+const SCHEDULE_SHIFT_OPTIONS = [...ALL_SHIFT_NAMES, "Libur"]; // dipakai di legend kalender
+const SHIFT_COLOR = { Pagi:'#3C6E96', Middle:'#2F9E6F', Siang:'#C98A2C', Minggu:'#8E44AD', Libur:'#8B93A7' };
+function shiftLabel(name){ return SHIFT_TIMES[name] ? `${name} (${SHIFT_TIMES[name]})` : name; }
+// Senin=1 ... Sabtu=6 pakai Pagi/Middle/Siang; Minggu(0) cuma shift "Minggu".
+function shiftNamesForDate(dateStr){
+  const dow = new Date(`${dateStr}T00:00:00`).getDay();
+  return dow === 0 ? SUNDAY_SHIFT_NAMES : WEEKDAY_SHIFT_NAMES;
+}
 
 const K = { employees:'app-employees', attendance:'app-attendance', leaveRequests:'app-leave-requests', payslips:'app-payslips', shiftRequests:'app-shift-requests', announcements:'app-announcements',
   overtimeRequests:'app-overtime-requests', attendanceRequests:'app-attendance-requests', files:'app-files', shiftSchedule:'app-shift-schedule', hrdAuth:'app-hrd-auth' };
@@ -314,6 +325,37 @@ async function loadAllData(){
   state.overtimeRequests = ot; state.attendanceRequests = ar; state.files = fl; state.shiftSchedule = sc;
 }
 
+/* ---------------------------------------------------------------- */
+/* Realtime sync — dokumen yang sering berubah mendadak (absensi &   */
+/* semua jenis pengajuan) dipantau langsung lewat Firestore listener */
+/* (onSnapshot), jadi perubahan dari user lain langsung muncul tanpa */
+/* perlu refresh halaman.                                            */
+/* ---------------------------------------------------------------- */
+let rtUnsubscribers = [];
+function stopRealtimeSync(){
+  rtUnsubscribers.forEach(unsub => { try{ unsub(); }catch(e){} });
+  rtUnsubscribers = [];
+}
+function startRealtimeSync(){
+  if(!fbReady()) return;
+  stopRealtimeSync();
+  const REALTIME_MAP = {
+    [K.attendance]: 'attendance',
+    [K.leaveRequests]: 'leaveRequests',
+    [K.shiftRequests]: 'shiftRequests',
+    [K.overtimeRequests]: 'overtimeRequests',
+    [K.attendanceRequests]: 'attendanceRequests',
+  };
+  Object.keys(REALTIME_MAP).forEach(docId => {
+    const field = REALTIME_MAP[docId];
+    const unsub = window.fb.db.collection('app-data').doc(docId).onSnapshot(
+      snap => { state[field] = (snap.exists && snap.data().value) || []; render(); },
+      err => console.warn(`Realtime "${docId}" terputus:`, err.message)
+    );
+    rtUnsubscribers.push(unsub);
+  });
+}
+
 async function init(){
   await loadAllData();
 
@@ -342,7 +384,8 @@ async function init(){
   // nyangkut kosong gara-gara sempat gagal baca saat belum login.
   if(fbReady()){
     window.fb.auth.onAuthStateChanged(async (user) => {
-      if(user){ await loadAllData(); render(); }
+      if(user){ await loadAllData(); startRealtimeSync(); render(); }
+      else{ stopRealtimeSync(); }
     });
   }
 }
@@ -1224,20 +1267,21 @@ function renderShiftCalendar(employeeId, monthKey, yearKey, opts){
         const dataAttr = opts.editable ? `data-action="open-set-shift" data-emp="${employeeId}" data-date="${key}"` : '';
         return `<div ${dataAttr} style="min-height:54px;border-radius:8px;padding:5px 6px;border:1px solid ${isToday?'var(--primary)':'var(--border)'};background:${color?color+'17':'#fff'};${opts.editable?'cursor:pointer;':''}">
           <div style="font-size:11px;font-weight:700;color:${isToday?'var(--primary)':'var(--ink-faint)'};">${d}</div>
-          ${rec ? `<div style="margin-top:3px;font-size:10px;font-weight:700;color:${color};line-height:1.2;">${esc(rec.shift)}</div>` : ''}
+          ${rec ? `<div style="margin-top:3px;font-size:10px;font-weight:700;color:${color};line-height:1.2;" title="${esc(shiftLabel(rec.shift))}">${esc(rec.shift)}${SHIFT_TIMES[rec.shift]?` <span style="font-weight:600;opacity:.85;">${SHIFT_TIMES[rec.shift]}</span>`:''}</div>` : ''}
         </div>`;
       }).join('')}
     </div>
     <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:14px;">
-      ${SCHEDULE_SHIFT_OPTIONS.map(s=>`<div style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--ink-soft);"><span class="dot" style="background:${SHIFT_COLOR[s]};"></span>${s}</div>`).join('')}
+      ${SCHEDULE_SHIFT_OPTIONS.map(s=>`<div style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--ink-soft);"><span class="dot" style="background:${SHIFT_COLOR[s]};"></span>${shiftLabel(s)}</div>`).join('')}
     </div>
-    ${opts.editable ? `<div style="margin-top:10px;font-size:11px;color:var(--ink-faint);">Klik tanggal untuk mengatur shift.</div>` : ''}
+    ${opts.editable ? `<div style="margin-top:10px;font-size:11px;color:var(--ink-faint);">Klik tanggal untuk mengatur shift. Senin–Sabtu: Pagi/Middle/Siang. Minggu: shift Minggu (13:00) saja.</div>` : ''}
   </div>`;
 }
 function renderSetShiftDayModal(){
   const { employeeId, date } = state.modal;
   const emp = state.employees.find(e=>e.id===employeeId);
   const existing = state.shiftSchedule.find(s=>s.employeeId===employeeId && s.date===date);
+  const dayShiftNames = shiftNamesForDate(date); // otomatis sesuai hari: Minggu vs Senin-Sabtu
   return `
   <div class="modal-overlay" data-action="close-modal-overlay">
     <div class="modal" style="max-width:380px;">
@@ -1250,7 +1294,8 @@ function renderSetShiftDayModal(){
         <div><label>Shift</label>
           <select id="ss-shift">
             <option value="">Belum diatur</option>
-            ${SCHEDULE_SHIFT_OPTIONS.map(s=>`<option value="${s}" ${existing && existing.shift===s ? 'selected' : ''}>${s}</option>`).join('')}
+            ${dayShiftNames.map(s=>`<option value="${s}" ${existing && existing.shift===s ? 'selected' : ''}>${shiftLabel(s)}</option>`).join('')}
+            <option value="Libur" ${existing && existing.shift==='Libur' ? 'selected' : ''}>Libur</option>
           </select>
         </div>
         <button class="btn btn-primary" data-action="submit-set-shift">Simpan</button>
@@ -1341,8 +1386,8 @@ function renderShiftHistoryList(employeeId){
             <span style="font-weight:700;">${esc(r.type)}</span>
             ${shiftBadge(r.status)}
           </div>
-          <div style="color:var(--ink-soft);margin-top:4px;font-size:12.5px;">${prettyDate(r.date)} · Shift ${esc(r.currentShift)}
-            ${r.type==='Ganti Shift' ? ` &rarr; ${esc(r.requestedShift)}` : partner ? ` dengan ${esc(partner.name)}` : ''}
+          <div style="color:var(--ink-soft);margin-top:4px;font-size:12.5px;">${prettyDate(r.date)} · Shift ${esc(shiftLabel(r.currentShift))}
+            ${r.type==='Ganti Shift' ? ` &rarr; ${esc(shiftLabel(r.requestedShift))}` : partner ? ` dengan ${esc(partner.name)}` : ''}
           </div>
           <div style="color:var(--ink-faint);margin-top:4px;font-size:12px;">${esc(r.reason)}</div>
         </div>`; }).join('')}
@@ -1352,6 +1397,8 @@ function renderShiftHistoryList(employeeId){
 function renderShiftFormModal(){
   const todayK = dateKey(new Date());
   const partners = state.employees.filter(e=>e.id!==state.currentEmpId);
+  const initialShiftNames = shiftNamesForDate(todayK);
+  const shiftOptionsHtml = initialShiftNames.map(s=>`<option value="${s}">${shiftLabel(s)}</option>`).join('');
   return `
   <div class="modal-overlay" data-action="close-modal-overlay">
     <div class="modal">
@@ -1367,25 +1414,33 @@ function renderShiftFormModal(){
           </select>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-          <div><label>Tanggal</label><input type="date" id="sh-date" value="${todayK}"></div>
+          <div><label>Tanggal</label><input type="date" id="sh-date" value="${todayK}" onchange="updateShiftDateOptions(this.value)"></div>
           <div><label>Shift Saat Ini</label>
-            <select id="sh-current">${SHIFT_OPTIONS.map(s=>`<option value="${s}">${s}</option>`).join('')}</select>
+            <select id="sh-current">${shiftOptionsHtml}</select>
           </div>
         </div>
         <div id="sh-ganti-fields" style="display:grid;">
           <label>Shift Yang Diinginkan</label>
-          <select id="sh-target">${SHIFT_OPTIONS.map(s=>`<option value="${s}">${s}</option>`).join('')}</select>
+          <select id="sh-target">${shiftOptionsHtml}</select>
         </div>
         <div id="sh-tukar-fields" style="display:none;">
           <label>Tukar Dengan (Rekan Kerja)</label>
           ${partners.length===0 ? `<div style="font-size:12.5px;color:var(--ink-faint);">Belum ada rekan kerja lain yang terdaftar.</div>` :
           `<select id="sh-partner">${partners.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>`}
         </div>
+        <div style="font-size:11px;color:var(--ink-faint);">Senin–Sabtu: Pagi (07:00) / Middle (08:00) / Siang (14:00). Minggu: shift Minggu (13:00) saja.</div>
         <div><label>Alasan</label><textarea rows="3" id="sh-reason" placeholder="Jelaskan alasan permintaan..."></textarea></div>
         <button class="btn btn-primary" data-action="submit-shift">Kirim Permintaan</button>
       </div>
     </div>
   </div>`;
+}
+function updateShiftDateOptions(dateStr){
+  const optsHtml = shiftNamesForDate(dateStr).map(s=>`<option value="${s}">${shiftLabel(s)}</option>`).join('');
+  ['sh-current','sh-target'].forEach(id=>{
+    const el = document.getElementById(id);
+    if(el) el.innerHTML = optsHtml;
+  });
 }
 
 /* ---------------------------------------------------------------- */
@@ -2064,7 +2119,7 @@ function renderHrdShiftApprovals(){
           <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;">
             <div>
               <div style="font-weight:700;font-size:13.5px;">${esc(empName(s.employeeId))} · <span style="color:var(--primary);">${esc(s.type)}</span></div>
-              <div style="font-size:12.5px;color:var(--ink-soft);margin-top:2px;">${prettyDate(s.date)} · Shift ${esc(s.currentShift)}${s.type==='Ganti Shift' ? ` &rarr; ${esc(s.requestedShift)}` : partner ? ` dengan ${esc(partner)}` : ''}</div>
+              <div style="font-size:12.5px;color:var(--ink-soft);margin-top:2px;">${prettyDate(s.date)} · Shift ${esc(shiftLabel(s.currentShift))}${s.type==='Ganti Shift' ? ` &rarr; ${esc(shiftLabel(s.requestedShift))}` : partner ? ` dengan ${esc(partner)}` : ''}</div>
               <div style="font-size:12px;color:var(--ink-faint);margin-top:4px;">${esc(s.reason)}</div>
             </div>
             <div style="display:flex;gap:6px;">
