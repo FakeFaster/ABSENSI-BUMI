@@ -116,12 +116,20 @@ tr:last-child td{border-bottom:none;}
 .hrd-nav-item .icon{ flex-shrink:0; }
 .hrd-dropdown-menu{ box-shadow:0 10px 30px rgba(18,23,43,.14); animation:landingIn .12s ease both; }
 .hrd-dropdown-menu .sidebar-item{ white-space:nowrap; }
+.hrd-hamburger-wrap{ display:none; }
 @media (max-width: 900px){
   .hrd-nav-label{ display:none; }
   .hrd-nav-item{ padding:9px 10px; }
 }
 @media (max-width: 640px){
   .hrd-topnav .sb-title span{ display:none; }
+}
+/* Di layar sempit (HP): sembunyikan baris menu ikon-ikon kecil yang bikin bingung,
+   ganti dengan satu tombol hamburger yang membuka menu lengkap (ikon + teks). */
+@media (max-width: 720px){
+  .hrd-nav-row{ display:none !important; }
+  .hrd-desktop-only{ display:none !important; }
+  .hrd-hamburger-wrap{ display:block; }
 }
 
 .profile-grid{display:grid;grid-template-columns:200px 1fr;gap:16px;align-items:start;}

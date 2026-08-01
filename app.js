@@ -38,6 +38,7 @@ function icon(name, size, color){
     heart: '<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 21l7.8-7.8 1-1a5.5 5.5 0 0 0 0-7.8Z"/>',
     key: '<circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.6 12.4 19 4"/><path d="M15.5 8 19 11.5"/><path d="M18 5 21 8"/>',
     idcard: '<rect x="2" y="5" width="20" height="14" rx="2"/><circle cx="8" cy="12" r="2"/><line x1="14" y1="10" x2="19" y2="10"/><line x1="14" y1="14" x2="19" y2="14"/>',
+    menu: '<line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>',
   };
   return `<svg ${s}>${paths[name] || ''}</svg>`;
 }
@@ -2435,6 +2436,7 @@ function renderHrdApp(){
   const moreNav = NAV.filter(n=>!PRIMARY_IDS.includes(n.id));
   const moreActive = moreNav.some(n=>n.id===state.hrdTab);
   const moreBadgeTotal = moreNav.reduce((sum,n)=>sum+(n.badge||0),0);
+  const allBadgeTotal = NAV.reduce((sum,n)=>sum+(n.badge||0),0);
   const moreOpen = !!state.hrdMoreMenuOpen;
 
   const navItem = n => `
@@ -2450,7 +2452,8 @@ function renderHrdApp(){
         <div class="sb-title" style="display:flex;align-items:center;gap:8px;padding:2px 6px;flex-shrink:0;">
           ${icon('building',18,'#25473D')} <span style="font-weight:700;font-size:14px;">Panel HRD</span>
         </div>
-        <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;flex:1;min-width:0;">
+
+        <div class="hrd-nav-row" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;flex:1;min-width:0;">
           ${primaryNav.map(navItem).join('')}
           <div class="hrd-dropdown" data-action="toggle-hrd-more" style="position:relative;">
             <div class="sidebar-item hrd-nav-item ${moreActive?'active':''}">
@@ -2468,8 +2471,27 @@ function renderHrdApp(){
             </div>` : ''}
           </div>
         </div>
-        <button class="btn btn-ghost" style="font-size:12.5px;padding:8px 10px;flex-shrink:0;" data-action="open-hrd-password" title="Ubah Password HRD">${icon('lock',15)}</button>
-        <button class="btn btn-outline" style="font-size:12.5px;padding:8px 12px;flex-shrink:0;" data-action="logout">Keluar</button>
+
+        <div class="hrd-hamburger-wrap" style="position:relative;margin-left:auto;">
+          <button class="btn btn-outline hrd-hamburger" style="padding:9px 11px;position:relative;" data-action="toggle-hrd-more" title="Menu">
+            ${icon('menu',18)}
+            ${allBadgeTotal ? `<span style="position:absolute;top:-4px;right:-4px;background:var(--danger);color:#fff;font-size:10px;font-weight:700;border-radius:999px;padding:1px 5px;">${allBadgeTotal}</span>` : ''}
+          </button>
+          ${moreOpen ? `
+          <div class="hrd-dropdown-menu card" style="position:absolute;top:calc(100% + 6px);right:0;min-width:240px;max-height:min(70vh,480px);overflow-y:auto;padding:6px;">
+            ${NAV.map(n=>`
+            <div class="sidebar-item ${state.hrdTab===n.id?'active':''}" style="margin-bottom:2px;" data-action="hrd-tab" data-tab="${n.id}">
+              ${icon(n.icon,16)} ${n.label}
+              ${n.badge ? `<span style="margin-left:auto;background:var(--danger);color:#fff;font-size:10.5px;font-weight:700;border-radius:999px;padding:1px 7px;">${n.badge}</span>` : ''}
+            </div>`).join('')}
+            <div style="height:1px;background:var(--border);margin:6px 2px;"></div>
+            <div class="sidebar-item" data-action="open-hrd-password">${icon('lock',16)} Ubah Password HRD</div>
+            <div class="sidebar-item" style="color:var(--danger);" data-action="logout">${icon('logout',16)} Keluar</div>
+          </div>` : ''}
+        </div>
+
+        <button class="btn btn-ghost hrd-desktop-only" style="font-size:12.5px;padding:8px 10px;flex-shrink:0;" data-action="open-hrd-password" title="Ubah Password HRD">${icon('lock',15)}</button>
+        <button class="btn btn-outline hrd-desktop-only" style="font-size:12.5px;padding:8px 12px;flex-shrink:0;" data-action="logout">Keluar</button>
       </div>
     </div>
     <div style="padding:0 16px 16px;min-width:0;">
