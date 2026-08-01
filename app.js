@@ -407,6 +407,10 @@ async function actionLogin(){
   if(fbReady()){
     const fbRes = await fbSignIn(fbEmailFor(username), password);
     if(fbRes.ok){
+      // Firestore baru boleh dibaca SETELAH login berhasil — pastikan data karyawan
+      // benar-benar sudah termuat dulu sebelum dicari, jangan andalkan reload di
+      // latar belakang (bisa saja belum selesai persis di titik ini).
+      await loadAllData();
       const emp = state.employees.find(e => (e.username||'').toLowerCase()===username);
       if(emp){ clearAttempts(username); state.role='employee'; state.currentEmpId=emp.id; state.loginBusy=false; state.registerSuccessMsg=''; render(); return; }
     }
@@ -453,6 +457,10 @@ async function actionGoogleLogin(){
     render(); return;
   }
   const email = (res.user.email || '').toLowerCase();
+  // Sama seperti login biasa: pastikan data karyawan sudah termuat dulu (baru bisa
+  // dibaca setelah login) sebelum dicek — supaya tidak salah bikin akun baru padahal
+  // akun Google ini sudah pernah daftar sebelumnya.
+  await loadAllData();
   let emp = state.employees.find(e => (e.googleEmail||'').toLowerCase()===email);
   if(!emp){
     emp = { id:uid('E'), name: res.user.displayName || 'Karyawan Baru', position:'', dept:'',
@@ -2609,6 +2617,7 @@ document.addEventListener('click', (e)=>{
     case 'show-login-form': state.loginMode='login'; state.loginError=''; render(); break;
     case 'do-register': actionRegister(); break;
     case 'logout':
+      if(fbReady()){ fbSignOut(); }
       state.role=null; state.currentEmpId=null; state.loginError=''; state.loginMode='login';
       state.empTab='absensi'; state.hrdTab='dashboard'; state.modal=null; state.hrdEmployeeDetailId=null;
       state.selectedPayslipId=null; state.empProfileTab='personal'; state.profileSavedMsg=''; state.profileError='';
