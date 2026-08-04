@@ -58,7 +58,8 @@ function googleIcon(size){
 const STATUS_COLOR = { Hadir:'#2F9E6F', Terlambat:'#D98E2D', Izin:'#C98A2C', Sakit:'#3C6E96', Alpha:'#C0392B' };
 const DAY_NAMES = ["Minggu","Senin","Selasa","Rabu","Kamis","Jumat","Sabtu"];
 const MONTH_NAMES = ["Januari","Februari","Maret","April","Mei","Juni","Juli","Agustus","September","Oktober","November","Desember"];
-const LATE_AFTER_MIN = 8*60+15;
+const GRACE_MINUTES = 15; // toleransi keterlambatan (menit) sebelum status jadi "Terlambat"
+const DEFAULT_SHIFT_FOR_LATE = 'Middle'; // dipakai kalau karyawan belum dijadwalkan shift hari itu
 
 const pad = n => String(n).padStart(2,'0');
 const timeStr = d => `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
@@ -79,14 +80,55 @@ function computeStats(employeeId, year, monthIdx, attendance){
   const emp = state.employees.find(e=>e.id===employeeId);
   if(emp && emp.joinDate){ weekdays = weekdays.filter(key => key >= emp.joinDate); }
   const s = {Hadir:0,Terlambat:0,Izin:0,Sakit:0,Alpha:0};
+  let counted = 0;
   weekdays.forEach(key=>{
     const rec = attendance.find(a=>a.employeeId===employeeId && a.date===key);
-    if(!rec){ s.Alpha++; return; }
-    if(s[rec.status]!==undefined) s[rec.status]++; else s.Alpha++;
+    if(rec){
+      if(s[rec.status]!==undefined) s[rec.status]++; else s.Alpha++;
+      counted++; return;
+    }
+    // Belum ada absensi utk hari ini. Sebelum dihukum "Alpha", cek dulu apakah
+    // HRD memang sudah mengatur jadwal shift-nya hari itu.
+    const shift = scheduledShiftFor(employeeId, key);
+    if(!shift){
+      // HRD belum atur jadwal shift hari itu — jangan dianggap Alpha, kosongkan saja
+      // (tidak ikut dihitung sama sekali, termasuk ke "total" hari kerja).
+      return;
+    }
+    // Kalau hari ini adalah hari karyawan baru bikin akunnya, dan akun itu baru
+    // dibuat SETELAH jam masuk shift yang sudah dijadwalkan HRD (mis. shift jam 07:00
+    // tapi akun baru dibuat jam 11:00), jangan hukum Alpha — anggap Hadir, karena
+    // karyawan memang belum bisa absen sebab akunnya belum ada saat jam masuk shift.
+    if(emp && emp.joinedAt && key===emp.joinDate){
+      const joined = new Date(emp.joinedAt);
+      const startStr = SHIFT_TIMES[shift] || SHIFT_TIMES[DEFAULT_SHIFT_FOR_LATE];
+      const [sh,sm] = startStr.split(':').map(Number);
+      const joinMinutes = joined.getHours()*60 + joined.getMinutes();
+      if(joinMinutes > (sh*60+sm)){
+        s.Hadir++; counted++; return;
+      }
+    }
+    s.Alpha++; counted++;
   });
-  return {...s, total: weekdays.length};
+  return {...s, total: counted};
 }
-function statusFromClockIn(hhmm){ const [h,m]=hhmm.split(':').map(Number); return (h*60+m) > LATE_AFTER_MIN ? 'Terlambat' : 'Hadir'; }
+// Shift yang dijadwalkan HRD untuk karyawan pada tanggal tertentu (null kalau belum diatur / Libur).
+function scheduledShiftFor(employeeId, dateStr){
+  const rec = state.shiftSchedule.find(s=>s.employeeId===employeeId && s.date===dateStr);
+  if(!rec || rec.shift==='Libur') return null;
+  return rec.shift;
+}
+// Status "Hadir"/"Terlambat" sekarang dihitung terhadap JAM MASUK SHIFT yang dijadwalkan
+// hari itu (+ toleransi 15 menit) — bukan lagi patokan jam tetap 08:15 utk semua shift.
+// Kalau karyawan belum dijadwalkan shift apapun hari itu, dipakai shift Middle (08:00) sbg default.
+function statusFromClockIn(hhmm, employeeId, dateStr){
+  const [h,m]=hhmm.split(':').map(Number);
+  const shift = (employeeId && dateStr) ? scheduledShiftFor(employeeId, dateStr) : null;
+  const startStr = SHIFT_TIMES[shift || DEFAULT_SHIFT_FOR_LATE] || SHIFT_TIMES[DEFAULT_SHIFT_FOR_LATE];
+  const [sh,sm] = startStr.split(':').map(Number);
+  const lateAfter = (sh*60+sm) + GRACE_MINUTES;
+  return (h*60+m) > lateAfter ? 'Terlambat' : 'Hadir';
+}
 function getLocation(){
   return new Promise((resolve,reject)=>{
     if(!navigator.geolocation){ reject(new Error('Perangkat tidak mendukung deteksi lokasi.')); return; }
@@ -130,16 +172,22 @@ function mapCard(loc, label){
 
 const SEED_EMPLOYEES = [];
 const HRD_USERNAME = "hrd";
-// Jadwal shift sekarang SAMA setiap hari (Senin–Minggu): Pagi/Middle/Siang, atau Libur.
-const SHIFT_TIMES = { Pagi:'07:00', Middle:'08:00', Siang:'14:00', Minggu:'13:00' }; // 'Minggu' disisakan hanya utk kompatibilitas data lama
-const WEEKDAY_SHIFT_NAMES = ["Pagi","Middle","Siang"]; // dipakai setiap hari, termasuk Minggu
-const ALL_SHIFT_NAMES = ["Pagi","Middle","Siang"];
+// Jadwal shift sekarang SAMA setiap hari (Senin–Minggu): Pagi/Middle/Siang/Siang 2, atau Libur.
+// Setiap shift punya jam masuk & jam keluar yang sudah ditentukan (durasi kerja 8 jam).
+const SHIFT_TIMES = { Pagi:'07:00', Middle:'08:00', Siang:'14:00', 'Siang 2':'13:00', Minggu:'13:00' }; // 'Minggu' disisakan hanya utk kompatibilitas data lama
+const SHIFT_END_TIMES = { Pagi:'15:00', Middle:'16:00', Siang:'22:00', 'Siang 2':'21:00' }; // jam keluar sesuai shift
+const WEEKDAY_SHIFT_NAMES = ["Pagi","Middle","Siang","Siang 2"]; // dipakai setiap hari, termasuk Minggu
+const ALL_SHIFT_NAMES = ["Pagi","Middle","Siang","Siang 2"];
 const SHIFT_OPTIONS = ALL_SHIFT_NAMES; // dipakai di form "Ganti/Tukar Shift"
 const SCHEDULE_SHIFT_OPTIONS = [...ALL_SHIFT_NAMES, "Libur"]; // dipakai di legend kalender
-const SHIFT_COLOR = { Pagi:'#3C6E96', Middle:'#2F9E6F', Siang:'#C98A2C', Minggu:'#8E44AD', Libur:'#8B93A7' };
-function shiftLabel(name){ return SHIFT_TIMES[name] ? `${name} (${SHIFT_TIMES[name]})` : name; }
+const SHIFT_COLOR = { Pagi:'#3C6E96', Middle:'#2F9E6F', Siang:'#C98A2C', 'Siang 2':'#B05A3C', Minggu:'#8E44AD', Libur:'#8B93A7' };
+// Label shift dengan rentang jam masuk–keluar, misal "Pagi (07:00–15:00)".
+function shiftLabel(name){
+  if(!SHIFT_TIMES[name]) return name;
+  return SHIFT_END_TIMES[name] ? `${name} (${SHIFT_TIMES[name]}–${SHIFT_END_TIMES[name]})` : `${name} (${SHIFT_TIMES[name]})`;
+}
 // Dulu Minggu punya shift khusus sendiri; sekarang semua hari (termasuk Minggu) pakai
-// pilihan shift yang sama: Pagi/Middle/Siang/Libur.
+// pilihan shift yang sama: Pagi/Middle/Siang/Siang 2/Libur.
 function shiftNamesForDate(dateStr){
   return WEEKDAY_SHIFT_NAMES;
 }
@@ -507,7 +555,7 @@ async function actionGoogleLogin(){
   let emp = state.employees.find(e => (e.googleEmail||'').toLowerCase()===email);
   if(!emp){
     emp = { id:uid('E'), name: res.user.displayName || 'Karyawan Baru', position:'', dept:'',
-      joinDate:dateKey(new Date()), username:'', googleEmail: email, googleUid: res.user.uid };
+      joinDate:dateKey(new Date()), joinedAt:Date.now(), username:'', googleEmail: email, googleUid: res.user.uid };
     await persist(K.employees, 'employees', [...state.employees, emp]);
   }
   state.role='employee'; state.currentEmpId=emp.id; state.loginBusy=false; state.registerSuccessMsg='';
@@ -539,13 +587,13 @@ async function actionRegister(){
       render(); return;
     }
     // Firebase Auth sudah memegang credential secara aman di server — jangan duplikasi password di sini sama sekali.
-    const newEmp = { id:uid('E'), name, position, dept, joinDate:dateKey(new Date()), username };
+    const newEmp = { id:uid('E'), name, position, dept, joinDate:dateKey(new Date()), joinedAt:Date.now(), username };
     await persist(K.employees, 'employees', [...state.employees, newEmp]);
   } else {
     // Mode tanpa Firebase: simpan password dalam bentuk hash + salt, tidak pernah plaintext.
     const salt = randomHex(16);
     const hash = await hashPassword(password, salt);
-    const newEmp = { id:uid('E'), name, position, dept, joinDate:dateKey(new Date()), username, passwordHash:hash, passwordSalt:salt };
+    const newEmp = { id:uid('E'), name, position, dept, joinDate:dateKey(new Date()), joinedAt:Date.now(), username, passwordHash:hash, passwordSalt:salt };
     await persist(K.employees, 'employees', [...state.employees, newEmp]);
   }
   state.loginBusy = false;
@@ -560,7 +608,7 @@ async function actionClockIn(){
     loc.address = await reverseGeocode(loc.lat, loc.lng);
     const now = new Date(); const ci = timeStr(now);
     const rec = { id:uid('ATT'), employeeId:state.currentEmpId, date:dateKey(now),
-      clockIn:ci, clockOut:null, clockInLoc:loc, clockOutLoc:null, status:statusFromClockIn(ci) };
+      clockIn:ci, clockOut:null, clockInLoc:loc, clockOutLoc:null, status:statusFromClockIn(ci, state.currentEmpId, dateKey(now)) };
     await persist(K.attendance, 'attendance', [...state.attendance, rec]);
   }catch(e){ state.clockError = e.message || 'Gagal absen masuk.'; }
   state.clockBusy=false; render();
@@ -619,7 +667,7 @@ async function actionAddEmployee(){
   if(password.length < 6){ if(errEl) errEl.textContent = 'Password minimal 6 karakter.'; return; }
   const taken = state.employees.some(e => (e.username||'').toLowerCase()===username) || username===HRD_USERNAME;
   if(taken){ if(errEl) errEl.textContent = 'Username sudah digunakan, pilih username lain.'; return; }
-  const base = {id:uid('E'), name, position, dept, joinDate, username};
+  const base = {id:uid('E'), name, position, dept, joinDate, joinedAt:Date.now(), username};
   if(fbReady()){
     const fbRes = await fbSignUpAsAdmin(fbEmailFor(username), password);
     if(!fbRes.ok){ if(errEl) errEl.textContent = fbErrorMsg(fbRes.reason); return; }
@@ -755,7 +803,7 @@ async function actionDecideAttendanceRequest(id, decision){
     const existing = state.attendance.find(a=>a.employeeId===req.employeeId && a.date===req.date);
     const clockIn = req.requestedClockIn || existing?.clockIn || null;
     const clockOut = req.requestedClockOut || existing?.clockOut || null;
-    const status = clockIn ? statusFromClockIn(clockIn) : (existing?.status || 'Hadir');
+    const status = clockIn ? statusFromClockIn(clockIn, req.employeeId, req.date) : (existing?.status || 'Hadir');
     if(existing){
       const nextAtt = state.attendance.map(a => (a.employeeId===req.employeeId && a.date===req.date)
         ? {...a, clockIn: clockIn, clockOut: clockOut, status} : a);
@@ -1046,6 +1094,8 @@ function renderLogin(){
 function renderClockCard(employee){
   const today = dateKey(new Date());
   const record = state.attendance.find(a=>a.employeeId===employee.id && a.date===today);
+  const todayShift = state.shiftSchedule.find(s=>s.employeeId===employee.id && s.date===today);
+  const expectedOut = todayShift && SHIFT_END_TIMES[todayShift.shift] ? SHIFT_END_TIMES[todayShift.shift] : null;
   const st = !record ? 'belum-masuk' : !record.clockOut ? 'sudah-masuk' : 'selesai';
   const btnBg = st==='selesai' ? 'var(--border)' : st==='sudah-masuk' ? 'var(--danger)' : 'var(--primary)';
   const btnColor = st==='selesai' ? 'var(--ink-faint)' : '#fff';
@@ -1082,6 +1132,8 @@ function renderClockCard(employee){
       <div style="background:var(--bg);border-radius:10px;padding:12px 14px;">
         <div style="font-size:11px;color:var(--ink-faint);font-weight:700;text-transform:uppercase;margin-bottom:4px;">Jam Keluar</div>
         <div class="mono" style="font-size:17px;font-weight:700;">${record?.clockOut || '--:--:--'}</div>
+        ${expectedOut ? `<div style="margin-top:4px;font-size:11.5px;color:var(--ink-faint);">Jadwal keluar (Shift ${esc(todayShift.shift)}): <span class="mono" style="font-weight:600;color:var(--ink-soft);">${expectedOut}</span></div>` : ''}
+        ${record?.clockOut && expectedOut && record.clockOut.slice(0,5) < expectedOut ? `<div style="margin-top:4px;">${badge('Pulang Cepat')}</div>` : ''}
         ${mapCard(record?.clockOutLoc, 'absen keluar')}
       </div>
     </div>
@@ -1275,14 +1327,14 @@ function renderShiftCalendar(employeeId, monthKey, yearKey, opts){
         const dataAttr = opts.editable ? `data-action="open-set-shift" data-emp="${employeeId}" data-date="${key}"` : '';
         return `<div ${dataAttr} style="min-height:54px;border-radius:8px;padding:5px 6px;border:1px solid ${isToday?'var(--primary)':'var(--border)'};background:${color?color+'17':'#fff'};${opts.editable?'cursor:pointer;':''}">
           <div style="font-size:11px;font-weight:700;color:${isToday?'var(--primary)':'var(--ink-faint)'};">${d}</div>
-          ${rec ? `<div style="margin-top:3px;font-size:10px;font-weight:700;color:${color};line-height:1.2;" title="${esc(shiftLabel(rec.shift))}">${esc(rec.shift)}${SHIFT_TIMES[rec.shift]?` <span style="font-weight:600;opacity:.85;">${SHIFT_TIMES[rec.shift]}</span>`:''}</div>` : ''}
+          ${rec ? `<div style="margin-top:3px;font-size:10px;font-weight:700;color:${color};line-height:1.2;" title="${esc(shiftLabel(rec.shift))}">${esc(rec.shift)}${SHIFT_TIMES[rec.shift]?` <span style="font-weight:600;opacity:.85;">${SHIFT_TIMES[rec.shift]}${SHIFT_END_TIMES[rec.shift]?`–${SHIFT_END_TIMES[rec.shift]}`:''}</span>`:''}</div>` : ''}
         </div>`;
       }).join('')}
     </div>
     <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:14px;">
       ${SCHEDULE_SHIFT_OPTIONS.map(s=>`<div style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--ink-soft);"><span class="dot" style="background:${SHIFT_COLOR[s]};"></span>${shiftLabel(s)}</div>`).join('')}
     </div>
-    ${opts.editable ? `<div style="margin-top:10px;font-size:11px;color:var(--ink-faint);">Klik tanggal untuk mengatur shift. Berlaku setiap hari (termasuk Minggu): Pagi (07:00) / Middle (08:00) / Siang (14:00) / Libur.</div>` : ''}
+    ${opts.editable ? `<div style="margin-top:10px;font-size:11px;color:var(--ink-faint);">Klik tanggal untuk mengatur shift. Berlaku setiap hari (termasuk Minggu): Pagi (07:00–15:00) / Middle (08:00–16:00) / Siang (14:00–22:00) / Siang 2 (13:00–21:00) / Libur.</div>` : ''}
   </div>`;
 }
 function renderSetShiftDayModal(){
@@ -1436,7 +1488,7 @@ function renderShiftFormModal(){
           ${partners.length===0 ? `<div style="font-size:12.5px;color:var(--ink-faint);">Belum ada rekan kerja lain yang terdaftar.</div>` :
           `<select id="sh-partner">${partners.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>`}
         </div>
-        <div style="font-size:11px;color:var(--ink-faint);">Berlaku setiap hari (termasuk Minggu): Pagi (07:00) / Middle (08:00) / Siang (14:00).</div>
+        <div style="font-size:11px;color:var(--ink-faint);">Berlaku setiap hari (termasuk Minggu): Pagi (07:00–15:00) / Middle (08:00–16:00) / Siang (14:00–22:00) / Siang 2 (13:00–21:00).</div>
         <div><label>Alasan</label><textarea rows="3" id="sh-reason" placeholder="Jelaskan alasan permintaan..."></textarea></div>
         <button class="btn btn-primary" data-action="submit-shift">Kirim Permintaan</button>
       </div>
