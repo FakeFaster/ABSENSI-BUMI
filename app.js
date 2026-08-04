@@ -130,19 +130,18 @@ function mapCard(loc, label){
 
 const SEED_EMPLOYEES = [];
 const HRD_USERNAME = "hrd";
-// Senin–Sabtu: 3 shift (Pagi/Middle/Siang). Minggu: cuma 1 shift jam 13:00.
-const SHIFT_TIMES = { Pagi:'07:00', Middle:'08:00', Siang:'14:00', Minggu:'13:00' };
-const WEEKDAY_SHIFT_NAMES = ["Pagi","Middle","Siang"]; // Senin s/d Sabtu
-const SUNDAY_SHIFT_NAMES = ["Minggu"]; // Khusus Minggu
-const ALL_SHIFT_NAMES = ["Pagi","Middle","Siang","Minggu"];
+// Jadwal shift sekarang SAMA setiap hari (Senin–Minggu): Pagi/Middle/Siang, atau Libur.
+const SHIFT_TIMES = { Pagi:'07:00', Middle:'08:00', Siang:'14:00', Minggu:'13:00' }; // 'Minggu' disisakan hanya utk kompatibilitas data lama
+const WEEKDAY_SHIFT_NAMES = ["Pagi","Middle","Siang"]; // dipakai setiap hari, termasuk Minggu
+const ALL_SHIFT_NAMES = ["Pagi","Middle","Siang"];
 const SHIFT_OPTIONS = ALL_SHIFT_NAMES; // dipakai di form "Ganti/Tukar Shift"
 const SCHEDULE_SHIFT_OPTIONS = [...ALL_SHIFT_NAMES, "Libur"]; // dipakai di legend kalender
 const SHIFT_COLOR = { Pagi:'#3C6E96', Middle:'#2F9E6F', Siang:'#C98A2C', Minggu:'#8E44AD', Libur:'#8B93A7' };
 function shiftLabel(name){ return SHIFT_TIMES[name] ? `${name} (${SHIFT_TIMES[name]})` : name; }
-// Senin=1 ... Sabtu=6 pakai Pagi/Middle/Siang; Minggu(0) cuma shift "Minggu".
+// Dulu Minggu punya shift khusus sendiri; sekarang semua hari (termasuk Minggu) pakai
+// pilihan shift yang sama: Pagi/Middle/Siang/Libur.
 function shiftNamesForDate(dateStr){
-  const dow = new Date(`${dateStr}T00:00:00`).getDay();
-  return dow === 0 ? SUNDAY_SHIFT_NAMES : WEEKDAY_SHIFT_NAMES;
+  return WEEKDAY_SHIFT_NAMES;
 }
 
 const K = { employees:'app-employees', attendance:'app-attendance', leaveRequests:'app-leave-requests', payslips:'app-payslips', shiftRequests:'app-shift-requests', announcements:'app-announcements',
@@ -420,43 +419,44 @@ async function actionLogin(){
   state.loginBusy = true; state.loginError=''; render();
   await new Promise(r=>setTimeout(r, 250));
 
-  if(username === HRD_USERNAME){
-    if(fbReady()){
-      const fbRes = await fbSignIn(fbEmailFor(username), password);
-      if(fbRes.ok){
-        const tokenResult = await fbRes.user.getIdTokenResult(true).catch(()=>null);
-        if(tokenResult && tokenResult.claims && tokenResult.claims.role === 'hrd'){
-          clearAttempts(username);
-          state.role='hrd'; state.loginBusy=false; state.registerSuccessMsg=''; render(); return;
-        }
-        await fbSignOut();
-        state.loginBusy=false;
-        state.loginError = 'Akun ini belum diberi akses HRD. Hubungi administrator sistem.';
-        render(); return;
-      }
-    } else if(state.hrdAuth){
-      const inputHash = await hashPassword(password, state.hrdAuth.salt);
-      if(inputHash === state.hrdAuth.hash){
+  if(fbReady()){
+    const fbRes = await fbSignIn(fbEmailFor(username), password);
+    if(fbRes.ok){
+      // Cek custom claim role:'hrd' — TIDAK dibatasi hanya untuk username "hrd" lagi.
+      // Akun SIAPAPUN yang sudah diberi claim ini secara manual (lewat skrip
+      // administrator/Firebase Admin SDK) otomatis masuk sebagai HRD/Admin, apapun
+      // username-nya. Inilah cara HRD memberi akses admin ke supervisor atau staf
+      // HR lain: jalankan skrip pemberi-claim itu terhadap UID akun mereka (lihat
+      // UID di halaman detail karyawan pada panel HRD).
+      const tokenResult = await fbRes.user.getIdTokenResult(true).catch(()=>null);
+      if(tokenResult && tokenResult.claims && tokenResult.claims.role === 'hrd'){
         clearAttempts(username);
         state.role='hrd'; state.loginBusy=false; state.registerSuccessMsg=''; render(); return;
       }
+      // Bukan admin — coba cocokkan sebagai karyawan biasa. Firestore baru boleh
+      // dibaca SETELAH login berhasil — pastikan data karyawan benar-benar sudah
+      // termuat dulu sebelum dicari, jangan andalkan reload di latar belakang
+      // (bisa saja belum selesai persis di titik ini).
+      await loadAllData();
+      const emp = state.employees.find(e => (e.username||'').toLowerCase()===username);
+      if(emp){ clearAttempts(username); state.role='employee'; state.currentEmpId=emp.id; state.loginBusy=false; state.registerSuccessMsg=''; render(); return; }
+      await fbSignOut();
+      state.loginBusy=false;
+      state.loginError = username===HRD_USERNAME
+        ? 'Akun ini belum diberi akses HRD. Hubungi administrator sistem.'
+        : 'Username atau password salah.';
+      render(); return;
+    }
+  } else if(username === HRD_USERNAME && state.hrdAuth){
+    const inputHash = await hashPassword(password, state.hrdAuth.salt);
+    if(inputHash === state.hrdAuth.hash){
+      clearAttempts(username);
+      state.role='hrd'; state.loginBusy=false; state.registerSuccessMsg=''; render(); return;
     }
     registerFailedAttempt(username);
     state.loginBusy = false;
     state.loginError = 'Username atau password salah.';
     render(); return;
-  }
-
-  if(fbReady()){
-    const fbRes = await fbSignIn(fbEmailFor(username), password);
-    if(fbRes.ok){
-      // Firestore baru boleh dibaca SETELAH login berhasil — pastikan data karyawan
-      // benar-benar sudah termuat dulu sebelum dicari, jangan andalkan reload di
-      // latar belakang (bisa saja belum selesai persis di titik ini).
-      await loadAllData();
-      const emp = state.employees.find(e => (e.username||'').toLowerCase()===username);
-      if(emp){ clearAttempts(username); state.role='employee'; state.currentEmpId=emp.id; state.loginBusy=false; state.registerSuccessMsg=''; render(); return; }
-    }
   }
 
   const emp = state.employees.find(e => (e.username||'').toLowerCase()===username);
@@ -623,6 +623,9 @@ async function actionAddEmployee(){
   if(fbReady()){
     const fbRes = await fbSignUpAsAdmin(fbEmailFor(username), password);
     if(!fbRes.ok){ if(errEl) errEl.textContent = fbErrorMsg(fbRes.reason); return; }
+    // Simpan UID Firebase karyawan ini — dipakai HRD kalau nanti mau memberi akses
+    // admin (custom claim role:'hrd') ke akun ini lewat skrip administrator.
+    base.uid = fbRes.uid;
     await persist(K.employees, 'employees', [...state.employees, base]);
   } else {
     const salt = randomHex(16);
@@ -694,12 +697,17 @@ async function actionSavePayslip(existingId){
   const employeeId = document.getElementById('ps-employee').value;
   const month = document.getElementById('ps-month').value;
   const basicSalary = Number(document.getElementById('ps-basic').value)||0;
-  const allowance = Number(document.getElementById('ps-allowance').value)||0;
-  const deduction = Number(document.getElementById('ps-deduction').value)||0;
+  const allowanceAttendance = Number(document.getElementById('ps-allowance-kehadiran').value)||0;
+  const allowancePerformance = Number(document.getElementById('ps-allowance-kinerja').value)||0;
+  const overtime = Number(document.getElementById('ps-overtime').value)||0;
+  const deductionKopKomi = Number(document.getElementById('ps-deduction-komi').value)||0;
+  const deductionIhbs = Number(document.getElementById('ps-deduction-ihbs').value)||0;
   const notes = document.getElementById('ps-notes').value;
   if(!employeeId || !month) return;
-  const netSalary = basicSalary + allowance - deduction;
-  const data = { id: existingId || uid('PS'), employeeId, month, basicSalary, allowance, deduction, netSalary, notes };
+  const totalEarnings = basicSalary + allowanceAttendance + allowancePerformance + overtime;
+  const totalDeductions = deductionKopKomi + deductionIhbs;
+  const netSalary = totalEarnings - totalDeductions;
+  const data = { id: existingId || uid('PS'), employeeId, month, basicSalary, allowanceAttendance, allowancePerformance, overtime, totalEarnings, deductionKopKomi, deductionIhbs, totalDeductions, netSalary, notes };
   const idx = state.payslips.findIndex(p=>p.id===data.id);
   const next = idx>=0 ? state.payslips.map(p=>p.id===data.id?data:p) : [...state.payslips, data];
   await persist(K.payslips, 'payslips', next);
@@ -922,7 +930,7 @@ function renderLogin(){
     { icon:'target', title:'Lokasi Akurat', desc:'Absen masuk & keluar tercatat dengan titik GPS dan estimasi akurasi.' },
     { icon:'wallet', title:'Slip Gaji Digital', desc:'Rincian gaji pokok, tunjangan, dan potongan bisa dilihat kapan saja.' },
     { icon:'chart', title:'Statistik Kehadiran', desc:'Pantau hadir, telat, izin, sakit, dan alpha dalam satu tampilan.' },
-    { icon:'shield', title:'Attendance Request', desc:'Approval izin & pengelolaan data karyawan terpusat.' },
+    { icon:'shield', title:'Keamanan 100%', desc:'Data pengelolaan karyawan terpusat.' },
   ];
 
   const isRegister = state.loginMode === 'register';
@@ -1274,7 +1282,7 @@ function renderShiftCalendar(employeeId, monthKey, yearKey, opts){
     <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:14px;">
       ${SCHEDULE_SHIFT_OPTIONS.map(s=>`<div style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--ink-soft);"><span class="dot" style="background:${SHIFT_COLOR[s]};"></span>${shiftLabel(s)}</div>`).join('')}
     </div>
-    ${opts.editable ? `<div style="margin-top:10px;font-size:11px;color:var(--ink-faint);">Klik tanggal untuk mengatur shift. Senin–Sabtu: Pagi/Middle/Siang. Minggu: shift Minggu (13:00) saja.</div>` : ''}
+    ${opts.editable ? `<div style="margin-top:10px;font-size:11px;color:var(--ink-faint);">Klik tanggal untuk mengatur shift. Berlaku setiap hari (termasuk Minggu): Pagi (07:00) / Middle (08:00) / Siang (14:00) / Libur.</div>` : ''}
   </div>`;
 }
 function renderSetShiftDayModal(){
@@ -1428,7 +1436,7 @@ function renderShiftFormModal(){
           ${partners.length===0 ? `<div style="font-size:12.5px;color:var(--ink-faint);">Belum ada rekan kerja lain yang terdaftar.</div>` :
           `<select id="sh-partner">${partners.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>`}
         </div>
-        <div style="font-size:11px;color:var(--ink-faint);">Senin–Sabtu: Pagi (07:00) / Middle (08:00) / Siang (14:00). Minggu: shift Minggu (13:00) saja.</div>
+        <div style="font-size:11px;color:var(--ink-faint);">Berlaku setiap hari (termasuk Minggu): Pagi (07:00) / Middle (08:00) / Siang (14:00).</div>
         <div><label>Alasan</label><textarea rows="3" id="sh-reason" placeholder="Jelaskan alasan permintaan..."></textarea></div>
         <button class="btn btn-primary" data-action="submit-shift">Kirim Permintaan</button>
       </div>
@@ -1787,11 +1795,20 @@ function renderPayslipView(employee){
         <div style="background:var(--bg);border-radius:10px;padding:14px;margin-bottom:14px;">
           <div style="font-size:12.5px;color:var(--ink-faint);">${esc(employee.name)} · ${esc(employee.position)}</div>
         </div>
+        <div style="font-size:11.5px;font-weight:700;color:var(--ink-faint);text-transform:uppercase;letter-spacing:.04em;margin-bottom:2px;">Earnings</div>
         ${payslipRow('Gaji Pokok', open.basicSalary)}
-        ${payslipRow('Tunjangan', open.allowance, 'pos')}
-        ${payslipRow('Potongan', -open.deduction, 'neg')}
-        <div style="border-top:1px dashed var(--border);margin:12px 0;"></div>
-        ${payslipRow('Gaji Bersih (Take Home Pay)', open.netSalary, null, true)}
+        ${payslipRow('Tunjangan Kehadiran', open.allowanceAttendance, 'pos')}
+        ${payslipRow('Tunjangan Kinerja Monthly', open.allowancePerformance, 'pos')}
+        ${payslipRow('Overtime', open.overtime, 'pos')}
+        <div style="border-top:1px dashed var(--border);margin:8px 0;"></div>
+        ${payslipRow('Total Earnings', open.totalEarnings, null, true)}
+        <div style="font-size:11.5px;font-weight:700;color:var(--ink-faint);text-transform:uppercase;letter-spacing:.04em;margin:16px 0 2px;">Deductions</div>
+        ${payslipRow('Potongan Komi (Simpanan Wajib)', -open.deductionKopKomi, 'neg')}
+        ${payslipRow('Potongan IHBS Card', -open.deductionIhbs, 'neg')}
+        <div style="border-top:1px dashed var(--border);margin:8px 0;"></div>
+        ${payslipRow('Total Deductions', -open.totalDeductions, null, true)}
+        <div style="border-top:1px solid var(--border);margin:14px 0;"></div>
+        ${payslipRow('Total Take Home Pay', open.netSalary, null, true)}
         ${open.notes ? `<div style="margin-top:14px;font-size:12.5px;color:var(--ink-soft);background:var(--bg);padding:10px;border-radius:8px;">Catatan: ${esc(open.notes)}</div>` : ''}
       `}
     </div>
@@ -1952,6 +1969,15 @@ function renderHrdEmployees(){
         </div>
         <button class="btn btn-outline" style="font-size:12.5px;padding:8px 12px;color:var(--danger);border-color:#F0C9C3;" data-action="open-delete-employee" data-id="${detailEmp.id}">${icon('trash',14)} Hapus Karyawan</button>
       </div>
+      ${detailEmp.uid ? `
+      <div class="card" style="padding:14px 16px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+        <div>
+          <div style="font-size:11.5px;font-weight:700;color:var(--ink-faint);text-transform:uppercase;letter-spacing:.04em;">Akses Admin (HRD)</div>
+          <div style="font-size:12.5px;color:var(--ink-soft);margin-top:3px;">Untuk memberi akses admin ke karyawan ini, jalankan skrip administrator (custom claim <span class="mono">role:'hrd'</span>) memakai UID berikut:</div>
+          <div class="mono" style="margin-top:6px;font-size:12.5px;background:var(--bg);padding:6px 10px;border-radius:8px;border:1px solid var(--border);display:inline-block;">${esc(detailEmp.uid)}</div>
+        </div>
+        <button class="btn btn-outline" style="font-size:12px;padding:8px 12px;" onclick="navigator.clipboard && navigator.clipboard.writeText('${esc(detailEmp.uid)}')">${icon('clipboard',14)} Salin UID</button>
+      </div>` : ''}
       ${renderStatsPanel(detailEmp.id, 'hrd-emp-detail-chart', 'statsMonth', 'statsYear')}
       ${renderHistoryTable(detailEmp.id)}
     </div>
@@ -2372,7 +2398,7 @@ function renderHrdPayslips(){
       ${state.payslips.length===0 ? emptyState('wallet','Belum ada slip gaji dibuat.') : `
       <div style="overflow-x:auto;">
         <table>
-          <thead><tr><th>Karyawan</th><th>Periode</th><th>Gaji Bersih</th><th></th></tr></thead>
+          <thead><tr><th>Karyawan</th><th>Periode</th><th>Total Gaji Take Home</th><th></th></tr></thead>
           <tbody>
             ${[...state.payslips].sort((a,b)=>a.month<b.month?1:-1).map(p=>{
               const emp = state.employees.find(e=>e.id===p.employeeId);
@@ -2409,16 +2435,43 @@ function renderPayslipFormModal(existingId){
           </select>
         </div>
         <div><label>Periode (bulan)</label><input type="month" id="ps-month" value="${initial ? initial.month : defaultMonth}" ${initial ? 'disabled' : ''}></div>
+
+        <div style="font-size:11.5px;font-weight:700;color:var(--ink-faint);text-transform:uppercase;letter-spacing:.04em;margin-top:4px;">Earnings</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-          <div><label>Gaji Pokok</label><input type="number" id="ps-basic" value="${initial ? initial.basicSalary : 5000000}"></div>
-          <div><label>Tunjangan</label><input type="number" id="ps-allowance" value="${initial ? initial.allowance : 0}"></div>
+          <div><label>Gaji Pokok</label><input type="number" id="ps-basic" value="${initial ? initial.basicSalary : 0}" oninput="updatePayslipPreview()"></div>
+          <div><label>Tunjangan Kehadiran</label><input type="number" id="ps-allowance-kehadiran" value="${initial ? initial.allowanceAttendance : 0}" oninput="updatePayslipPreview()"></div>
         </div>
-        <div><label>Potongan</label><input type="number" id="ps-deduction" value="${initial ? initial.deduction : 0}"></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+          <div><label>Tunjangan Kinerja Monthly</label><input type="number" id="ps-allowance-kinerja" value="${initial ? initial.allowancePerformance : 0}" oninput="updatePayslipPreview()"></div>
+          <div><label>Overtime</label><input type="number" id="ps-overtime" value="${initial ? initial.overtime : 0}" oninput="updatePayslipPreview()"></div>
+        </div>
+
+        <div style="font-size:11.5px;font-weight:700;color:var(--ink-faint);text-transform:uppercase;letter-spacing:.04em;margin-top:8px;">Deductions</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+          <div><label>Potongan Komi (Simpanan Wajib)</label><input type="number" id="ps-deduction-komi" value="${initial ? initial.deductionKopKomi : 0}" oninput="updatePayslipPreview()"></div>
+          <div><label>Potongan IHBS Card</label><input type="number" id="ps-deduction-ihbs" value="${initial ? initial.deductionIhbs : 0}" oninput="updatePayslipPreview()"></div>
+        </div>
+
+        <div class="card" style="padding:12px 14px;background:var(--primary-soft);border-color:var(--primary-line);display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-size:13px;font-weight:700;color:var(--primary);">Total Gaji Take Home</span>
+          <span id="ps-preview-total" class="mono" style="font-size:16px;font-weight:700;color:var(--primary);">${rupiah(initial ? initial.netSalary : 0)}</span>
+        </div>
+
         <div><label>Catatan (opsional)</label><textarea rows="2" id="ps-notes">${initial ? esc(initial.notes||'') : ''}</textarea></div>
         <button class="btn btn-primary" data-action="submit-payslip" data-id="${existingId || ''}">Simpan Slip Gaji</button>
       </div>
     </div>
   </div>`;
+}
+// Menghitung ulang Total Gaji Take Home secara langsung (live) saat HRD mengisi
+// form slip gaji, tanpa perlu render ulang seluruh form (biar fokus input tidak hilang).
+function updatePayslipPreview(){
+  const val = id => Number(document.getElementById(id)?.value) || 0;
+  const totalEarnings = val('ps-basic') + val('ps-allowance-kehadiran') + val('ps-allowance-kinerja') + val('ps-overtime');
+  const totalDeductions = val('ps-deduction-komi') + val('ps-deduction-ihbs');
+  const netSalary = totalEarnings - totalDeductions;
+  const out = document.getElementById('ps-preview-total');
+  if(out) out.textContent = rupiah(netSalary);
 }
 
 /* ---------------------------------------------------------------- */
